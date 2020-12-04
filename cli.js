@@ -36,7 +36,7 @@ socket.on('connect_timeout', (timeout) => {
 });
 
 socket.on('connect', () => {
-    console.info('Connection établie');
+    //console.info('Connection établie');
 
     switch (argv._[0]) {
         case 'get':
@@ -46,13 +46,13 @@ socket.on('connect', () => {
             });
             break;
         case 'set':
-            socket.emit('set', argv.key, argv.value, (ok) => {
+            socket.emit('set', argv.key, argv.value, (new Date()).getTime(), (ok) => {
                 console.info(`set ${argv.key} : ${ok}`);
                 socket.close();
             });
             break;
         case 'keys':
-            socket.emit('keys', (res) => {
+            socket.emit('keys2', 1, (res) => {
                 console.info(res);
                 socket.close();
             })
@@ -60,6 +60,18 @@ socket.on('connect', () => {
         case 'addPeer':
             socket.emit('addPeer', argv.port, (ok) => {
                 socket.close()
+            })
+            break;
+        case 'kat':
+            socket.emit('KeysAndTime', (res) => {
+                console.info('KeysAndTime', res);
+                socket.close();
+            })
+            break;
+        case 'peers':
+            socket.emit('peers', (pl) => {
+                console.info('peer list', pl);
+                socket.close();
             })
             break;
         default:

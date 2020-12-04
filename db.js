@@ -2,9 +2,14 @@
 const socketIO = require('socket.io-client');
 
 const argv = require('yargs').argv; // Analyse des paramètres
+const crypto = require('crypto');
 
+// Retourne l'empreinte de data.
+const getHash = function getHash(data) {
+    return crypto.createHash('sha256').update(data, 'utf8').digest('hex');
+}
 const PORT = argv.port || 3000; // Utilisation du port en paramètre ou par defaut 3000
-
+const URL = argv.url || `http://localhost:${PORT}`
 
 const Server = require('socket.io');
 const io = new Server(PORT, { // Création du serveur
@@ -15,25 +20,25 @@ const io = new Server(PORT, { // Création du serveur
 
 const db = Object.create(null); // Création de la DB
 
-console.info(`Serveur lancé sur le port ${PORT}.`);
-var others_ports = [];
+console.info(`Serveur lancé sur ${URL}.`);
+var others_url = [];
 var peers = [];
 
-function newPeer(port) {
-    const ns = socketIO(`http://localhost:${port}`, {
+function newPeer(url) {
+    const ns = socketIO(url, {
         path: '/byr',
         reconnection: false,
         reconnect: false,
     });
-    console.info(`connecting to http://localhost:${port}`)
+    console.info(`connecting to ${url}`)
     ns.on('connect', () => {
-        console.log(`peer ${port} connected`)
+        console.log(`peer ${url} connected`)
     })
-    ns.port = port
+    ns.url = url
     ns.on('disconnect', function () {
-        peers = peers.filter((peer) => peer.port !== port);
-        others_ports = others_ports.filter((p) => p !== port);
-        console.warn(`Peer ${port} disconnected`);
+        peers = peers.filter((peer) => peer.url !== url);
+        others_url = others_url.filter((p) => p !== url);
+        console.warn(`Peer ${url} disconnected`);
     })
     return ns;
 }
@@ -42,11 +47,14 @@ function initialSync() {
     peers.forEach((peer) => { // récupère les clés des autres serveurs
         peer.emit('keys', (keys) => {
             keys.forEach((key) => {
-                peer.emit('get', key, (value, timestamp) => {
-                    db[key] = {
-                        value: value,
-                        timestamp: timestamp
-                    };
+                peer.emit('get', key, (value, timestamp, hash) => {
+                    if (getHash(value) === hash) {
+                        db[key] = {
+                            value: value,
+                            timestamp: timestamp
+                        };
+                    }
+
                 })
             })
         })
@@ -56,7 +64,8 @@ function initialSync() {
 function extractHorodatage() {
     return Object.keys(db).reduce(function (result, key) {
         result[key] = {
-            timestamp: db[key].timestamp
+            timestamp: db[key].timestamp,
+            hash: db[key].hash,
         };
         return result;
     }, {});
@@ -67,13 +76,14 @@ io.on('connect', (socket) => { // Pour chaque nouvlle connexion
 
     socket.on('get', function (field, callback) {
         console.info(`get ${field}: ${db[field]['value']} (${db[field]['timestamp']})`);
-        callback(db[field]['value'], db[field]['timestamp']);
+        callback(db[field].value, db[field].timestamp);
     });
 
-    socket.on('set', function (field, value, timestamp, callback) {
+    socket.on('set', function (field, value, timestamp, hash, callback) {
         if (field in db) {
-            if (db[field]['timestamp'] > timestamp) {
-                db[field]['value'] = value;
+            if (db[field].timestamp > timestamp) {
+                db[field].value = value;
+                db[field].hash = hash;
             }
             console.info(`set error : Field ${field} exists.`);
             callback(false);
@@ -82,8 +92,9 @@ io.on('connect', (socket) => { // Pour chaque nouvlle connexion
             db[field] = {
                 value: value,
                 timestamp: timestamp,
+                hash: hash,
             };
-            peers.forEach((peer) => peer.emit('set', field, value, timestamp, (ok) => {
+            peers.forEach((peer) => peer.emit('set', field, value, timestamp, hash, (ok) => {
                 console.info(`${field} set on ${peer.port}`)
             }))
             callback(true);
@@ -94,25 +105,25 @@ io.on('connect', (socket) => { // Pour chaque nouvlle connexion
         console.info('keys:', Object.keys(db));
         callback(Object.keys(db));
     });
-    socket.on('addPeer', function (port, callback) {
+    socket.on('addPeer', function (url, callback) {
         console.info('addPeer')
-        if (others_ports.includes(port)) {
+        if (others_url.includes(url)) {
             callback(false)
-            console.warn(`peer ${port} is already connected`)
+            console.warn(`peer ${url} is already connected`)
         } else {
-            others_ports.push(port)
+            others_url.push(url)
 
             peers.forEach((peer) => {
                 // partage à nos pairs du nouveau
-                peer.emit('addPeer', port, (ok) => {
+                peer.emit('addPeer', url, (ok) => {
                     if (ok) {
-                        console.info(`shared peer ${port}`)
+                        console.info(`shared peer ${url}`)
                     }
                 });
             })
-            const newpeer = newPeer(port);
+            const newpeer = newPeer(url);
             peers.push(newpeer);
-            newpeer.emit('addPeer', PORT, (ok) => {
+            newpeer.emit('addPeer', URL, (ok) => {
                 console.info('2-way peer')
             });
             initialSync();
@@ -125,7 +136,7 @@ io.on('connect', (socket) => { // Pour chaque nouvlle connexion
     })
 
     socket.on('peers', function (callback) {
-        callback(peers.map((peer) => peer.port));
+        callback(peers.map((peer) => peer.url));
     })
 
     socket.on('keys2', function (ttl, callback) {
@@ -146,7 +157,12 @@ setInterval(() => {
         peer.emit('KeysAndTime', (KeysAndTime) => {
             Object.keys(KeysAndTime).forEach((key) => {
                 if (KeysAndTime[key] < db[key]) {
-                    console.warn(`dates différentes pour ${key}`)
+                    console.warn(`dates différentes pour ${key}, MaJ`)
+                    peer.emit('get', key, (value, timestamp, hash) => {
+                        if (hash === getHash(value)) {
+                            db[key] = value;
+                        }
+                    })
                 }
             })
         })
@@ -159,9 +175,9 @@ setInterval(() => {
     peers.forEach((peer) => {
         peer.emit('peers', (remote_peers) => {
             remote_peers.forEach((port) => {
-                if (!others_ports.includes(port) && port != PORT) {
+                if (!others_url.includes(port) && port != PORT) {
                     // si on découvre un nouveau pair
-                    others_ports.push(port)
+                    others_url.push(port)
                     const newpeer = newPeer(port);
                     peers.push(newpeer);
                 }

@@ -1,9 +1,14 @@
 #!/usr/bin/env node
+const crypto = require('crypto');
 
+// Retourne l'empreinte de data.
+const getHash = function getHash(data) {
+    return crypto.createHash('sha256').update(toString(data), 'utf8').digest('hex');
+}
 const argv = require('yargs') // Analyse des paramètres
     .command('get <key>', 'Récupère la valeur associé à la clé')
     .command('set <key> <value>', 'Place une association clé / valeur')
-    .command('addPeer <port>', 'Ajoute un paur')
+    .command('addPeer <purl>', 'Ajoute un paur')
     .command('keys', 'Demande la liste des clés')
     .option('url', {
         alias: 'u',
@@ -40,13 +45,13 @@ socket.on('connect', () => {
 
     switch (argv._[0]) {
         case 'get':
-            socket.emit('get', argv.key, (value) => {
+            socket.emit('get', argv.key, (value,_) => {
                 console.info(`get ${argv.key} : ${value}`);
                 socket.close();
             });
             break;
         case 'set':
-            socket.emit('set', argv.key, argv.value, (new Date()).getTime(), (ok) => {
+            socket.emit('set', argv.key, argv.value, (new Date()).getTime(), getHash(argv.value), (ok) => {
                 console.info(`set ${argv.key} : ${ok}`);
                 socket.close();
             });
@@ -58,7 +63,8 @@ socket.on('connect', () => {
             })
             break;
         case 'addPeer':
-            socket.emit('addPeer', argv.port, (ok) => {
+            socket.emit('addPeer', argv.purl, (ok) => {
+                console.info('announced',argv.purl)
                 socket.close()
             })
             break;

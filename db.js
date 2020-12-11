@@ -6,7 +6,7 @@ const crypto = require('crypto');
 
 // Retourne l'empreinte de data.
 const getHash = function getHash(data) {
-    return crypto.createHash('sha256').update(data, 'utf8').digest('hex');
+    return crypto.createHash('sha256').update(`${data}`, 'utf8').digest('hex');
 }
 const PORT = argv.port || 3000; // Utilisation du port en paramètre ou par defaut 3000
 const URL = argv.url || `http://localhost:${PORT}`
@@ -17,6 +17,9 @@ const io = new Server(PORT, { // Création du serveur
     serveClient: false,
 });
 
+function checkHash(key, value, nonce, hash) {
+    return getHash(`${key}${value}${nonce}`) === hash && hash.startsWith('0');
+}
 
 const db = Object.create(null); // Création de la DB
 
@@ -43,19 +46,25 @@ function newPeer(url) {
     return ns;
 }
 
+function remoteInsert(peer, key) {
+    peer.emit('get', key, (value, timestamp, hash, nonce) => {
+        if (checkHash(key, value, hash, nonce)) {
+            db[key] = {
+                value: value,
+                timestamp: timestamp,
+                hash: hash,
+                nonce: nonce,
+            };
+        }
+
+    })
+}
+
 function initialSync() {
     peers.forEach((peer) => { // récupère les clés des autres serveurs
         peer.emit('keys', (keys) => {
             keys.forEach((key) => {
-                peer.emit('get', key, (value, timestamp, hash) => {
-                    if (getHash(value) === hash) {
-                        db[key] = {
-                            value: value,
-                            timestamp: timestamp
-                        };
-                    }
-
-                })
+                remoteInsert(peer, key)
             })
         })
     })
@@ -79,11 +88,17 @@ io.on('connect', (socket) => { // Pour chaque nouvlle connexion
         callback(db[field].value, db[field].timestamp);
     });
 
-    socket.on('set', function (field, value, timestamp, hash, callback) {
+    socket.on('set', function (field, value, timestamp, hash, nonce, callback) {
+        if (checkHash(field, value, nonce, hash)) {
+            console.error('le hash ne commence pas par 0', `${key}=${value} : ${hash}`)
+            callback(false);
+            return false;
+        }
         if (field in db) {
             if (db[field].timestamp > timestamp) {
                 db[field].value = value;
                 db[field].hash = hash;
+                db[field].nonce = nonce;
             }
             console.info(`set error : Field ${field} exists.`);
             callback(false);
@@ -93,8 +108,9 @@ io.on('connect', (socket) => { // Pour chaque nouvlle connexion
                 value: value,
                 timestamp: timestamp,
                 hash: hash,
+                nonce: nonce,
             };
-            peers.forEach((peer) => peer.emit('set', field, value, timestamp, hash, (ok) => {
+            peers.forEach((peer) => peer.emit('set', field, value, timestamp, hash, nonce, (ok) => {
                 console.info(`${field} set on ${peer.port}`)
             }))
             callback(true);
@@ -156,13 +172,13 @@ setInterval(() => {
     peers.forEach((peer) => {
         peer.emit('KeysAndTime', (KeysAndTime) => {
             Object.keys(KeysAndTime).forEach((key) => {
-                if (KeysAndTime[key] < db[key]) {
-                    console.warn(`dates différentes pour ${key}, MaJ`)
-                    peer.emit('get', key, (value, timestamp, hash) => {
-                        if (hash === getHash(value)) {
-                            db[key] = value;
-                        }
-                    })
+                if (key in db) {
+                    if (KeysAndTime[key] < db[key]) {
+                        console.warn(`dates différentes pour ${key}, MaJ`)
+                        remoteInsert(peer,key)
+                    }
+                } else {
+                    remoteInsert(peer,key)
                 }
             })
         })

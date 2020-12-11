@@ -3,8 +3,22 @@ const crypto = require('crypto');
 
 // Retourne l'empreinte de data.
 const getHash = function getHash(data) {
-    return crypto.createHash('sha256').update(toString(data), 'utf8').digest('hex');
+    return crypto.createHash('sha256').update(data, 'utf8').digest('hex');
 }
+
+function getMagicHash(key, value) {
+    //console.log('key',key,'value',value)
+    let i = 0;
+    let hash = "";
+    while (!hash.startsWith('0')) {
+        const s = `${key}${value}${i}`
+        hash = getHash(s)
+        //console.log(`${s} : ${hash}`)
+        i+=1;
+    }
+    return [hash, i]
+}
+
 const argv = require('yargs') // Analyse des paramètres
     .command('get <key>', 'Récupère la valeur associé à la clé')
     .command('set <key> <value>', 'Place une association clé / valeur')
@@ -45,13 +59,15 @@ socket.on('connect', () => {
 
     switch (argv._[0]) {
         case 'get':
-            socket.emit('get', argv.key, (value,_) => {
+            socket.emit('get', argv.key, (value, _) => {
                 console.info(`get ${argv.key} : ${value}`);
                 socket.close();
             });
             break;
         case 'set':
-            socket.emit('set', argv.key, argv.value, (new Date()).getTime(), getHash(argv.value), (ok) => {
+            const [hash, magic_number] = getMagicHash(argv.key, argv.value);
+            console.log('hash magique', hash, 'i', magic_number)
+            socket.emit('set', argv.key, argv.value, (new Date()).getTime(), hash, magic_number, (ok) => {
                 console.info(`set ${argv.key} : ${ok}`);
                 socket.close();
             });
@@ -64,7 +80,7 @@ socket.on('connect', () => {
             break;
         case 'addPeer':
             socket.emit('addPeer', argv.purl, (ok) => {
-                console.info('announced',argv.purl)
+                console.info('announced', argv.purl)
                 socket.close()
             })
             break;
